@@ -617,6 +617,7 @@ def _launch(
     device_collective_metadata: ir.Value | None = None,
     num_peers: int = 0,
     num_params: int = 0,
+    programmatic_serialization: bool = False,
 ):
   if (profiler_spec is None) != (maybe_prof_buffer is None):
     raise ValueError(
@@ -678,6 +679,10 @@ def _launch(
       dynamicSharedMemorySize=c(smem_bytes, i32),
       **cluster_kwargs,
   )
+  if programmatic_serialization:
+    launch_op.attributes["mosaic_gpu.programmatic_serialization"] = (
+        ir.BoolAttr.get(True)
+    )
   launch_op.body.blocks.append(*([index] * (12 + 2 * len(cluster_kwargs))))  # Append an empty block
   with ir.InsertionPoint(launch_op.body.blocks[0]):
     dynamic_smem = gpu.dynamic_shared_memory(
@@ -820,6 +825,7 @@ def _lower_as_gpu_kernel(
     prof_spec: profiler.ProfilerSpec | None = None,
     jax_mesh: mesh_lib.Mesh | None = None,
     base_loc: ir.Location | None = None,
+    programmatic_serialization: bool = False,
 ):
   ptr_ty = llvm.PointerType.get()
   token_ty = gpu.AsyncTokenType.get()
@@ -850,6 +856,8 @@ def _lower_as_gpu_kernel(
   arch_major, arch_minor = _infer_arch()
   attrs["mosaic_gpu.arch_major"] = ir.IntegerAttr.get(i32, arch_major)
   attrs["mosaic_gpu.arch_minor"] = ir.IntegerAttr.get(i32, arch_minor)
+  if programmatic_serialization:
+    attrs["mosaic_gpu.programmatic_serialization"] = ir.BoolAttr.get(True)
 
   # These are needed as nonlocal below.
   launch_ctx = None
@@ -923,6 +931,7 @@ def _lower_as_gpu_kernel(
           collective_metadata,
           num_peers,
           num_params,
+          programmatic_serialization=programmatic_serialization,
       ) as (_launch_ctx, smem_refs):
         launch_ctx = _launch_ctx
         body(launch_ctx, *arg_refs, smem_refs)

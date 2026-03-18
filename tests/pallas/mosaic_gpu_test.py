@@ -323,10 +323,12 @@ class PallasSm90ATest(PallasTest, jtu.CudaArchSpecificTest):
     # No artificially lowered limit for arch-specific tests
     super().setUp(artificial_shared_memory_limit=None)
 
+  @parameterized.parameters(False, True)
   @jtu.thread_unsafe_test()  # Modifies ``os.environ``.
-  def test_griddepcontrol(self):
+  def test_griddepcontrol(self, programmatic_serialization):
+    if self.__class__ is not PallasSm90ATest:
+      self.skipTest("Only run in PallasSm90ATest")
     self.skip_if_wg_semantics()
-
     @jax.jit
     def f(x):
       def kernel_body(x_ref, o_ref):
@@ -337,6 +339,8 @@ class PallasSm90ATest(PallasTest, jtu.CudaArchSpecificTest):
       return self.kernel(
           kernel_body,
           out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          compiler_params=plgpu.CompilerParams(
+              programmatic_serialization=programmatic_serialization),
       )(x)
 
     x = jnp.arange(128).astype(jnp.float32)
@@ -355,13 +359,44 @@ class PallasSm90ATest(PallasTest, jtu.CudaArchSpecificTest):
       with config.enable_compilation_cache(False):
         # Capture stdout to verify PTX
         with self.capture_stdout() as get_ptx:
-          out = f(x)
+          out = jax.block_until_ready(f(x))
 
     np.testing.assert_allclose(out, x + 1.0)
 
     ptx_output = get_ptx()
     self.assertIn("griddepcontrol.wait;", ptx_output)
     self.assertIn("griddepcontrol.launch_dependents;", ptx_output)
+
+  def test_griddepcontrol_multi_kernel(self):
+    if self.__class__ is not PallasSm90ATest:
+      self.skipTest("Only run in PallasSm90ATest")
+    # Tests that we can launch two kernels that communicate via griddepcontrol.
+    @jax.jit
+    def f(x):
+      def kernel_a(x_ref, out_ref):
+        out_ref[...] = x_ref[...] + 1.0
+        plgpu.griddepcontrol_launch_dependents()
+
+      def kernel_b(in_ref, out_ref):
+        plgpu.griddepcontrol_wait()
+        out_ref[...] = in_ref[...] * 2.0
+
+      intermediate = self.kernel(
+          kernel_a,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          compiler_params=plgpu.CompilerParams(
+              programmatic_serialization=True),
+      )(x)
+      return self.kernel(
+          kernel_b,
+          out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+          compiler_params=plgpu.CompilerParams(
+              programmatic_serialization=True),
+      )(intermediate)
+
+    x = jnp.arange(128).astype(jnp.float32)
+    out = f(x)
+    np.testing.assert_allclose(out, (x + 1.0) * 2.0)
 
 
 class PallasTCGen05Test(PallasTest, jtu.CudaArchSpecificTest):
@@ -4147,6 +4182,7 @@ class PallasCallWGTest(
     expected_missing_primitives = set()
 
     self.assertSetEqual(actual_missing_primitives, expected_missing_primitives)
+
 
 
 class PallasCallSm90ATest(PallasSm90ATest):
