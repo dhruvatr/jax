@@ -229,7 +229,7 @@ class MemorySpace(enum.Enum):
           "pltpu.MemorySpace.HOST is deprecated. Use pl.HOST instead.",
           stacklevel=2,
       )
-      return pallas_core.MemorySpace.HOST
+      return jax_core.MemorySpace.Host
     super().__getattr__(name)  # pyrefly: ignore[missing-attribute]
 
   def __str__(self) -> str:
@@ -600,10 +600,16 @@ def memory_space_to_tpu_memory_space(
         MemorySpace
         | pallas_core.MemorySpace
         | pallas_core.CoreMemorySpace
+        | jax_core.MemorySpace
         | None
     ),
     core_type: CoreType,
-) -> MemorySpace | pallas_core.MemorySpace | pallas_core.CoreMemorySpace:
+) -> (
+    MemorySpace
+    | pallas_core.MemorySpace
+    | pallas_core.CoreMemorySpace
+    | jax_core.MemorySpace
+):
   match memory_space:
     case None:
       match core_type:
@@ -619,7 +625,7 @@ def memory_space_to_tpu_memory_space(
           return MemorySpace.SMEM
         case _:
           raise ValueError(f"Unsupported core type: {core_type}")
-    case pallas_core.MemorySpace.ANY | pallas_core.MemorySpace.HOST:
+    case pallas_core.MemorySpace.ANY | jax_core.MemorySpace.Host:
       return memory_space
     case (
         pallas_core.MemorySpace.ERROR
@@ -637,3 +643,9 @@ def memory_space_to_tpu_memory_space(
       return memory_space
     case _:
       raise ValueError(f"Invalid memory space: {memory_space!r}")
+
+
+# === Registers Mosaic custom memory space mapping rules in JAX core ===
+
+
+jax_core.custom_mem_space_to_kind_rules[MemorySpace] = lambda _: "device"

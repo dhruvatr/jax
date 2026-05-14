@@ -256,7 +256,10 @@ class MemoryRef(MemoryRefBase):
     dtype = self.inner_aval.dtype
     if not isinstance(dtype, (jnp.dtype, dtypes.ExtendedDType)):
       dtype = jnp.dtype(dtype)
-    return self.inner_aval.update(dtype=dtype, memory_space=self.memory_space)
+    ms = self.memory_space
+    if ms is MemorySpace.ANY:
+      ms = jax_core.MemorySpace.Device
+    return self.inner_aval.update(dtype=dtype, memory_space=ms)
 
   def get_ref_aval(self) -> TransformedRef | state.AbstractRef:
     return state.AbstractRef(self.inner_aval, self.memory_space)
@@ -274,6 +277,11 @@ class MemoryRef(MemoryRefBase):
         other.shape, other.dtype, other.memory_space)
 
 
+def _jax_core_memory_space_call(self, shape, dtype):
+  return MemoryRef(jax_core.ShapedArray(shape, dtype), memory_space=self)
+jax_core.MemorySpace.__call__ = _jax_core_memory_space_call  # pytype: ignore[bad-assignment]
+
+
 class MemorySpace(enum.Enum):
   """Logical, device-agnostic memory spaces.
 
@@ -285,7 +293,6 @@ class MemorySpace(enum.Enum):
   ERROR = "error"  # Memory space for checkify errors.
   INDEX = "index"  # Memory space for scalar prefetch arguments.
   KEY = "key"  # Memory space for PRNG keys.
-  HOST = "host"  # Host memory space.
 
   def from_type(self, type: jax_core.AbstractValue) -> MemoryRef:
     return MemoryRef(type, memory_space=self)
@@ -1452,9 +1459,11 @@ class CostEstimate:
 
 def get_memory_space_aval(aval: jax_core.AbstractValue) -> Any:
   """Queries the memory space of an array."""
-  if (isinstance(aval, jax_core.ShapedArray) and
-      not isinstance(aval.memory_space, jax_core.MemorySpace)):
-    return aval.memory_space
+  if isinstance(aval, jax_core.ShapedArray):
+    if aval.memory_space is jax_core.MemorySpace.Host:
+      return jax_core.MemorySpace.Host
+    if not isinstance(aval.memory_space, jax_core.MemorySpace):
+      return aval.memory_space
   if isinstance(aval, state.AbstractRef):
     if aval.memory_space is not None:
       return aval.memory_space
@@ -1904,3 +1913,25 @@ def _core_map_partial_eval_custom(saveable, unks_in, inst_in, eqn):
     # which tells us that this core_map is really a purely tangent computation.
     return None, eqn, [], [], []
 pe.partial_eval_jaxpr_custom_rules[core_map_p] = _core_map_partial_eval_custom
+
+
+# === Registers Pallas custom memory space mapping rules in JAX core ===
+
+
+def _pallas_mem_space_to_kind(mem_space: MemorySpace) -> str:
+  """Maps Pallas MemorySpace enum values to standard XLA memory kinds."""
+  del mem_space
+  return "device"
+
+
+jax_core.custom_mem_space_to_kind_rules[MemorySpace] = _pallas_mem_space_to_kind
+
+
+def _core_mem_space_to_kind(mem_space: CoreMemorySpace) -> str:
+  """Recursively resolves CoreMemorySpace to standard memory kinds."""
+  return jax_core.mem_space_to_kind(mem_space.memory_space)
+
+
+jax_core.custom_mem_space_to_kind_rules[CoreMemorySpace] = (
+    _core_mem_space_to_kind
+)

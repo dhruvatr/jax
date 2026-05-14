@@ -1848,13 +1848,27 @@ def mem_kind_to_space(mem_kind: str | None) -> MemorySpace:
     return MemorySpace.Host
   return MemorySpace.Device
 
-def mem_space_to_kind(mem_space: MemorySpace) -> str:
-  if mem_space == MemorySpace.Device:
-    return 'device'
-  elif mem_space == MemorySpace.Host:
-    return 'pinned_host'
-  else:
-    assert False, "unreachable"
+
+def mem_space_to_kind(mem_space: Any) -> str:
+  """Converts a memory space to its corresponding XLA memory kind string.
+
+  Supports standard MemorySpace enums and custom registered memory spaces
+  (via custom_mem_space_to_kind_rules).
+  """
+  if isinstance(mem_space, MemorySpace):
+    if mem_space == MemorySpace.Device:
+      return "device"
+    elif mem_space == MemorySpace.Host:
+      return "pinned_host"
+  elif type(mem_space) in custom_mem_space_to_kind_rules:
+    return custom_mem_space_to_kind_rules[type(mem_space)](mem_space)
+  assert False, f"unreachable: {mem_space}"
+
+
+# Registry for custom memory space mapping rules.
+# Maps a custom memory space type to a mapper function:
+#   (mem_space) -> "device" | "pinned_host"
+custom_mem_space_to_kind_rules: dict[type, Callable[[Any], str]] = {}
 
 
 @cache(max_size=4096,

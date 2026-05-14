@@ -15,6 +15,8 @@
 """Mosaic-specific Pallas APIs."""
 import typing
 
+from jax._src import core as jax_core
+
 from jax._src.pallas.einshape import einshape as einshape
 from jax._src.pallas.mosaic import core as core
 from jax._src.pallas.mosaic.core import CoreType as CoreType
@@ -89,6 +91,7 @@ SMEM = MemorySpace.SMEM
 VMEM = MemorySpace.VMEM
 VMEM_SHARED = MemorySpace.VMEM_SHARED
 HBM = MemorySpace.HBM
+HOST = jax_core.MemorySpace.Host
 SEMAPHORE = MemorySpace.SEMAPHORE
 
 
@@ -96,7 +99,7 @@ _deprecations = {
     # Added June 4, 2026
     "HOST": (
         "pltpu.HOST is deprecated, use pl.HOST instead.",
-        _pl_core.MemorySpace.HOST,
+        jax_core.MemorySpace.Host,
     ),
     # Added Mar 24, 2026
     "semaphore": ("pltpu.semaphore is deprecated, use pl.semaphore instead.", _deprecated_semaphore),
@@ -124,7 +127,7 @@ if typing.TYPE_CHECKING:
   semaphore_read = _deprecated_semaphore_read
   semaphore_signal = _deprecated_semaphore_signal
   semaphore_wait = _deprecated_semaphore_wait
-  HOST = _pl_core.MemorySpace.HOST
+  HOST = jax_core.MemorySpace.Host
 else:
   from jax._src.deprecations import deprecation_getattr as _deprecation_getattr
   __getattr__ = _deprecation_getattr(__name__, _deprecations)
