@@ -76,6 +76,41 @@ PipelineBlockSpecs = Union[Sequence[pallas_core.BlockSpec], Any]
 PipelineRefs = Union[Sequence[REF], Any]
 
 
+@dataclasses.dataclass(frozen=True)
+class PrefetchedInput:
+  """Bundles an ref with its prefetched refs and count of buffers it has prefetched.
+
+  This type is recognized by emit_pipeline to automatically bind prefetched
+  windows to the corresponding BufferedRef.
+
+  Attributes:
+    ref: The original Ref for the input.
+    prefetched_ref: The prefetched Ref.
+    prefetched_count: The number of buffers we have prefetched ahead. Note that
+      prefetched_count is NOT the buffer count of the pipeline (i.e., of the
+      BufferedRef). It should be strictly less than the pipeline's buffer count.
+      This is for leaving at least one slot empty for fetching during the first
+      iteration.
+  """
+
+  ref: ArrayRef
+  prefetched_ref: ArrayRef
+  prefetched_count: int
+
+  def bind(self, bref: BufferedRef) -> BufferedRef:
+    """Binds prefetched ref and count to a BufferedRef."""
+    prefetched_count = self.prefetched_count
+    window_ref = self.prefetched_ref
+    if not bref.is_trivial_windowing and prefetched_count >= bref.buffer_count:
+      prefetched_count = bref.buffer_count - 1
+    return dataclasses.replace(
+        bref,
+        window_ref=window_ref,
+        is_prefetched=True,
+        prefetched_count=prefetched_count,
+    )
+
+
 def _create_blocked_slice(
     block_index: jax.Array | int,
     block_size: int,
@@ -300,6 +335,10 @@ class BufferedRefBase:
     """
     return False
 
+  @property
+  def is_prefetched(self) -> bool:
+    return False
+
   def initialize_slots(self):
     """Initializes slots to 0."""
     raise NotImplementedError()
@@ -467,7 +506,7 @@ class BufferedRef(BufferedRefBase):
   wait_in_slot: int | jax.Array | None
   copy_out_slot: int | jax.Array | None
   wait_out_slot: int | jax.Array | None
-  next_fetch: Sequence[jax.Array] | None
+  next_fetch: Sequence[jax.Array | int] | None
   sem_recvs: SemaphoreTuple | None
   sem_sends: SemaphoreTuple | None
   tiling: Tiling | None = dataclasses.field(metadata=dict(static=True))
@@ -476,6 +515,12 @@ class BufferedRef(BufferedRefBase):
   )
   has_allocated_buffer: bool = dataclasses.field(
       default=False, metadata=dict(static=True)
+  )
+  is_prefetched: bool = dataclasses.field(
+      default=False, metadata=dict(static=True)
+  )
+  prefetched_count: int = dataclasses.field(
+      default=0, metadata=dict(static=True)
   )
 
   def __post_init__(self):
@@ -526,6 +571,7 @@ class BufferedRef(BufferedRefBase):
       source_memory_space: tpu_core.MemorySpace | Literal[ANY] = ANY,  # pyrefly: ignore[not-a-type]
       tiling: Tiling | None = None,
       is_trivial_windowing: bool = False,
+      is_prefetched: bool = False,
   ) -> BufferedRef:
     """Create a BufferedRef.
 
@@ -594,12 +640,16 @@ class BufferedRef(BufferedRefBase):
           buffer_ty = ty.update(shape=(buffer_count * block_shape[0],))
         else:
           buffer_ty = ty.update(shape=(buffer_count, *block_shape))
+      if is_prefetched:
+        window_ref = None  # to be bound to existing ref by the pipeline routine
+      else:
+        window_ref = buffer_memory_space.from_type(buffer_ty)
       return cls(
           _spec=spec,
           _buffer_type=buffer_type,
           _buffer_count=buffer_count,
           _grid_rank=grid_rank if use_lookahead else None,
-          window_ref=buffer_memory_space.from_type(buffer_ty),
+          window_ref=window_ref,
           copy_in_slot=None,
           wait_in_slot=None,
           copy_out_slot=None,
@@ -618,6 +668,7 @@ class BufferedRef(BufferedRefBase):
           tiling=tiling,
           is_trivial_windowing=is_trivial_windowing,
           has_allocated_buffer=True,
+          is_prefetched=is_prefetched,
       )
 
   @classmethod
@@ -644,7 +695,7 @@ class BufferedRef(BufferedRefBase):
 
   def with_next_fetch(
       self,
-      next_fetch: Sequence[jax.Array] | None = None,
+      next_fetch: Sequence[jax.Array | int] | None = None,
   ):
     return dataclasses.replace(self, next_fetch=next_fetch)
 
@@ -911,6 +962,9 @@ class BufferedRef(BufferedRefBase):
           dst_ref.at[dst_slice],  # only dst shape is important
           self.sem_sends.at[wait_slot],
       ).wait()
+
+  def advance_next_fetch(self, grid):
+    return self.with_next_fetch(_next_index(self.next_fetch, grid))
 
 
 def fetch_with_lookahead(buffered_ref, src_ref,
@@ -1208,6 +1262,12 @@ class Scheduler:
       if (step + 1) >= buffered_ref.buffer_count:
         return buffered_ref
 
+      if buffered_ref.is_prefetched:
+        if step < buffered_ref.prefetched_count:
+          if buffered_ref.use_lookahead and step > 0:
+            buffered_ref = buffered_ref.advance_next_fetch(self.grid)
+          return buffered_ref.advance_copy_in_slot()
+
       if buffered_ref.use_lookahead:
         if step == 0:
           # We always fetch the first block.
@@ -1246,6 +1306,12 @@ class Scheduler:
     if buffered_ref.is_trivial_windowing:
       return buffered_ref
     pred = self.has_changed(buffered_ref) | self.first_step
+    pred = pred & (
+        ~(
+            buffered_ref.is_prefetched
+            & (self.step < buffered_ref.prefetched_count)
+        )
+    )
 
     @when(pred)
     @self._named_scope("ep_wait_in")
@@ -1374,6 +1440,9 @@ def _make_pipeline_allocations(
   in_refs = refs[:num_in_specs]
   out_refs = refs[num_in_specs:]
   def make_input_bref(in_spec, in_ref):
+    is_prefetched = isinstance(in_ref, PrefetchedInput)
+    if is_prefetched:
+      in_ref = in_ref.ref
     in_aval = _ref_to_value_aval(in_ref)
     buffer_count = 2
     use_lookahead = False
@@ -1395,6 +1464,7 @@ def _make_pipeline_allocations(
         source_memory_space=in_ref.memory_space,
         tiling=tiling,
         is_trivial_windowing=is_trivial,
+        is_prefetched=is_prefetched,
     )
   in_brefs = jax.tree.map(make_input_bref, in_specs, in_refs)
   def make_output_bref(out_spec, out_ref):
@@ -1659,6 +1729,25 @@ def emit_pipeline(
     if isinstance(allocations, list):
       allocations = tuple(allocations)
 
+    # Bind prefetched refs from PrefetchedInput instances.
+    def _bind_window_ref(bref, in_ref):
+      if isinstance(in_ref, PrefetchedInput):
+        assert isinstance(bref, BufferedRef), bref
+        return in_ref.bind(bref)
+      return bref
+
+    allocations = jax.tree.map(
+        _bind_window_ref,
+        allocations,
+        refs,
+        is_leaf=lambda x: isinstance(x, (BufferedRefBase, PrefetchedInput)),
+    )
+
+    # Unwrap PrefetchedInput leaves so the loop body gets raw Pallas refs.
+    refs = jax.tree.map(
+        lambda r: r.ref if isinstance(r, PrefetchedInput) else r, refs
+    )
+
     def make_scheduler(step, indices):
       return Scheduler(
           step,
@@ -1745,7 +1834,11 @@ def emit_pipeline(
         scheduler = make_scheduler(0, initial_indices)
         brefs = map_brefs(lambda bref: bref.initialize_slots(), allocations)
         def _sync_copy_in(bref, ref):
-          if bref.is_trivial_windowing and bref.window_ref is not None:
+          if (
+              bref.is_trivial_windowing
+              and bref.window_ref is not None
+              and not bref.is_prefetched
+          ):
             sync_copy(ref, bref, initial_indices)
 
         map_inputs(_sync_copy_in, brefs, refs)
@@ -1805,8 +1898,6 @@ def emit_pipeline_with_allocations(
                     out_specs=out_specs,
                     grid=grid)
   pipeline = emit_pipeline(
-      body,
-      grid=grid,
-      in_specs=in_specs,
-      out_specs=out_specs)
+      body, grid=grid, in_specs=in_specs, out_specs=out_specs
+  )
   return pipeline, make_allocations

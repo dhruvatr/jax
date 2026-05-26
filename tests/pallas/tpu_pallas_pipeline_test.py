@@ -494,6 +494,126 @@ class PallasCallPipelineTest(jtu.JaxTestCase):
 
     np.testing.assert_allclose(out, x[0])
 
+  def test_prefetched_input(self):
+    def pipeline_body(x_ref, o_ref):
+      o_ref[...] = x_ref[...]
+
+    def kernel(x_hbm_ref, o_hbm_ref):
+      @functools.partial(
+          pl.run_scoped,
+          x_prefetched_vmem=pltpu.VMEM((2, 128), jnp.float32),
+      )
+      def _(x_prefetched_vmem):
+        pltpu.sync_copy(x_hbm_ref.at[pl.ds(0, 128)], x_prefetched_vmem.at[0])
+
+        prefetched_input = pltpu.PrefetchedInput(
+            ref=x_hbm_ref,
+            prefetched_ref=x_prefetched_vmem,
+            prefetched_count=1,
+        )
+
+        pltpu.emit_pipeline(
+            pipeline_body,
+            grid=(4,),
+            in_specs=pl.BlockSpec(
+                (128,),
+                lambda i: (i,),
+                pipeline_mode=pl.Buffered(buffer_count=2),
+            ),
+            out_specs=pl.BlockSpec((128,), lambda i: (i,)),
+        )(prefetched_input, o_hbm_ref)
+
+    x = jnp.arange(512, dtype=jnp.float32)
+    out = pl.pallas_call(
+        kernel,
+        in_specs=[
+            pl.BlockSpec(memory_space=pl.ANY),
+        ],
+        out_specs=pl.BlockSpec(memory_space=pl.ANY),
+        out_shape=jax.ShapeDtypeStruct((512,), jnp.float32),
+    )(x)
+    np.testing.assert_allclose(out, x)
+
+  def test_prefetched_input_lookahead(self):
+    def pipeline_body(x_ref, o_ref):
+      o_ref[...] = x_ref[...]
+
+    def kernel(x_hbm_ref, o_hbm_ref):
+      @functools.partial(
+          pl.run_scoped,
+          x_prefetched_vmem=pltpu.VMEM((2, 128), jnp.float32),
+      )
+      def _(x_prefetched_vmem):
+        pltpu.sync_copy(x_hbm_ref.at[pl.ds(0, 128)], x_prefetched_vmem.at[0])
+
+        prefetched_input = pltpu.PrefetchedInput(
+            ref=x_hbm_ref,
+            prefetched_ref=x_prefetched_vmem,
+            prefetched_count=1,
+        )
+
+        pltpu.emit_pipeline(
+            pipeline_body,
+            grid=(4,),
+            in_specs=pl.BlockSpec(
+                (128,),
+                lambda i: (i,),
+                pipeline_mode=pl.Buffered(buffer_count=2, use_lookahead=True),
+            ),
+            out_specs=pl.BlockSpec((128,), lambda i: (i,)),
+        )(prefetched_input, o_hbm_ref)
+
+    x = jnp.arange(512, dtype=jnp.float32)
+    out = pl.pallas_call(
+        kernel,
+        in_specs=[
+            pl.BlockSpec(memory_space=pl.ANY),
+        ],
+        out_specs=pl.BlockSpec(memory_space=pl.ANY),
+        out_shape=jax.ShapeDtypeStruct((512,), jnp.float32),
+    )(x)
+    np.testing.assert_allclose(out, x)
+
+  def test_prefetched_input_trivial_windowing(self):
+    def pipeline_body(x_ref, o_ref):
+      o_ref[...] = x_ref[...]
+
+    def kernel(x_hbm_ref, o_hbm_ref):
+      @functools.partial(
+          pl.run_scoped,
+          x_prefetched_vmem=pltpu.VMEM((512,), jnp.float32),
+      )
+      def _(x_prefetched_vmem):
+        pltpu.sync_copy(x_hbm_ref, x_prefetched_vmem)
+
+        prefetched_input = pltpu.PrefetchedInput(
+            ref=x_hbm_ref,
+            prefetched_ref=x_prefetched_vmem,
+            prefetched_count=1,
+        )
+
+        pltpu.emit_pipeline(
+            pipeline_body,
+            grid=(1,),
+            in_specs=pl.BlockSpec(
+                (512,),
+                lambda i: (0,),
+                pipeline_mode=pl.Buffered(buffer_count=1),
+            ),
+            out_specs=pl.BlockSpec((512,), lambda i: (0,)),
+        )(prefetched_input, o_hbm_ref)
+
+    x = jnp.arange(512, dtype=jnp.float32)
+    out = pl.pallas_call(
+        kernel,
+        in_specs=[
+            pl.BlockSpec(memory_space=pl.ANY),
+        ],
+        out_specs=pl.BlockSpec(memory_space=pl.ANY),
+        out_shape=jax.ShapeDtypeStruct((512,), jnp.float32),
+    )(x)
+    np.testing.assert_allclose(out, x)
+
 
 @jtu.with_config(jax_pallas_poison_buffers=True)
 class PallasCallPipelinePoisonTest(jtu.JaxTestCase):
@@ -540,8 +660,6 @@ class PallasCallPipelinePoisonTest(jtu.JaxTestCase):
       np.testing.assert_array_equal(
           out[4:, :].astype(jnp.int32), expected_poison
       )
-
-
 
 
 class PallasCallMultipleBufferedPipelineTest(jtu.JaxTestCase):
