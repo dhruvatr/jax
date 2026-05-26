@@ -380,7 +380,7 @@ def _extract_layout_candidates_from_mma_tiling(
     tiling = (swizzle_elems, 8) if is_transposed else (8, swizzle_elems)
     if any(s % t for s, t in zip(tiled_dimensions, tiling)):
       continue
-    yield v, cs.SMEMTransforms(lc.TileTransform(tiling))
+    yield v, cs.SMEMTransforms(lc.TileTransform(tiling), swizzle)
 
 
 def _divides_per_var(
@@ -2019,18 +2019,25 @@ def _extract_smem_transforms_from_custom_transform_attrs(
     case [lc.TileTransform() as t, mgpu.SwizzlingMode() as s]:
       tile_transform = t
       swizzle = s
+    case [mgpu.SwizzlingMode() as s]:
+      tile_transform = None
+      swizzle = s
     case _:
       raise NotImplementedError(f"Unsupported transforms {transforms}")
 
   if swizzle is not None:
-    computed_swizzle = _compute_swizzle(ref_type, tile_transform)
-    if computed_swizzle != swizzle:
-      raise NotImplementedError(
-          f"Cannot honor caller-provided swizzle {swizzle} that is different "
-          f"from the computed swizle {computed_swizzle} for type {ref_type}."
-      )
+    if tile_transform is not None:
+      computed_swizzle = _compute_swizzle(ref_type, tile_transform)
+      if computed_swizzle != swizzle:
+        raise NotImplementedError(
+            f"Cannot honor caller-provided swizzle {swizzle} that is different "
+            f"from the computed swizle {computed_swizzle} for type {ref_type}."
+        )
+    swizzle_v = swizzle.value
+  else:
+    swizzle_v = None
 
-  return cs.SMEMTransforms(tile_transform)
+  return cs.SMEMTransforms(tile_transform, swizzle_v)
 
 
 @_add_constraint_system_derivation_rule(mgpu.WithTransformsOp)
@@ -2041,11 +2048,15 @@ def _with_transforms_constraint_system(
   source = ValueSite(op, VariableType.OPERAND, 0)
   dest = ValueSite(op, VariableType.RESULT, 0)
   var = ctx.producer_ref(source)
-  tiling = _extract_smem_transforms_from_custom_transform_attrs(op.ref.type, op.transforms)
-  if tiling.tiling is not None:
+  tiling = _extract_smem_transforms_from_custom_transform_attrs(
+      op.ref.type, op.transforms
+  )
+  tiling_transform = tiling.tiling
+
+  if tiling_transform is not None:
     if not cs.is_valid_assignment(var, tiling):
       raise ValueError(
-          f"Cannot apply tiling {tiling.tiling} to memref with shape {source.shape}."
+          f"Cannot apply tiling {tiling_transform.tiling} to memref with shape {source.shape}."
       )
   assignments: dict[cs.Variable, cs.Constant] = {var: tiling}
   return cs.ConstraintSystem(assignments=assignments), {var: [source, dest]}
@@ -2315,10 +2326,18 @@ def assign_layouts(solution: dict[ValueSite, cs.Constant]) -> None:
       for tl in transforms:
         assert isinstance(tl.layout, cs.SMEMTransforms)
         attrs = []
-        if tl.layout.tiling is not None:
-          attrs.append(layouts_lib.to_transform_attr(tl.layout.tiling))
-          swizzle = _compute_swizzle(tl.type, tl.layout.tiling)
+        tiling_transform = tl.layout.tiling
+        swizzle_v = tl.layout.swizzle
+
+        if tiling_transform is not None:
+          attrs.append(layouts_lib.to_transform_attr(tiling_transform))
+          if swizzle_v is not None:
+            swizzle = mgpu.SwizzlingMode(swizzle_v)
+          else:
+            swizzle = _compute_swizzle(tl.type, tiling_transform)
           attrs.append(layouts_lib.to_transform_attr(swizzle))
+        elif swizzle_v is not None:
+          attrs.append(layouts_lib.to_transform_attr(mgpu.SwizzlingMode(swizzle_v)))
         all_attrs.append(ir.ArrayAttr.get(attrs))
       return all_attrs
 
