@@ -65,12 +65,6 @@ else:
   plgpu.kernel = do_not_call_me_directly
 
 
-def is_nvshmem_used() -> bool:
-  return (
-      "XLA_FLAGS" in os.environ
-        and "--xla_gpu_experimental_enable_nvshmem" in os.environ["XLA_FLAGS"])
-
-
 def is_multiprocess():
   return "MULTIPROCESS_TEST" in os.environ
 
@@ -128,8 +122,6 @@ class TestCase(_TestCaseBase, metaclass=PallasTestMetaclass):
     if (not jtu.is_device_cuda() or
         not jtu.is_cuda_compute_capability_at_least("9.0")):
       self.skipTest("Only works on GPU with capability >= sm90")
-    if os.environ.get("XLA_PYTHON_CLIENT_ALLOCATOR", "") == "platform":
-      self.skipTest("NVSHMEM doesn't work with the platform allocator.")
 
     self.monkey_patched_api_was_used = False
     super().setUp()
@@ -1061,44 +1053,6 @@ class PallasCallMultimemThreadUnsafeTest(TestCase):
     ):
       self.skipTest("Not all local devices support multicast")
 
-  def test_collective_metadata_with_nvshmem_raises(self):
-    if is_multiprocess():
-      self.skipTest("This test runs only in single-process mode.")
-
-    def kernel(y_ref, sem):
-      @pl.when(lax.axis_index('x') == 0)
-      def _store():
-        output = plgpu.layout_cast(lax.broadcasted_iota(jnp.int32, (128, 128), 1), plgpu.Layout.WGMMA)
-        plgpu.multimem_store(output, y_ref, 'x')
-      other_dev_id = 1 - lax.axis_index('x')
-      pl.semaphore_signal(sem, 1, device_id=other_dev_id)
-      pl.semaphore_wait(sem)
-
-    kernel_call = self.kernel(
-        kernel,
-        out_shape=jax.ShapeDtypeStruct((128, 128), jnp.int32),
-        scratch_shapes=[plgpu.SemaphoreType.REGULAR],
-    )
-    mesh = jax.sharding.Mesh(jax.devices()[:2], ["x"])
-    f = jax.jit(
-        jax.shard_map(
-            kernel_call, mesh=mesh, in_specs=(), out_specs=P("x"), check_vma=False,
-        )
-    )
-
-    enable_nvshmem_flag = "--xla_gpu_experimental_enable_nvshmem=true"
-    xla_flags = os.environ.get("XLA_FLAGS", "")
-    if xla_flags:
-      xla_flags = f"{xla_flags} {enable_nvshmem_flag}"
-    else:
-      xla_flags = enable_nvshmem_flag
-    with jtu.set_env(XLA_FLAGS=xla_flags):
-      with self.assertRaisesRegex(
-          Exception,
-          "remove --xla_gpu_experimental_enable_nvshmem from your XLA flags.",
-      ):
-        f().block_until_ready()
-
   def _test_reduce_scatter(
       self,
       shape,
@@ -1376,15 +1330,6 @@ if __name__ == '__main__':
   # allocator is used, setUp will skip the test.
   os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.01'
   os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'default'
-  if is_nvshmem_used():
-    # TODO(b/483671897) re-enable once command buffers supported with collectives.
-    additional_xla_flags = "--xla_gpu_enable_command_buffer=''"
-    if "XLA_FLAGS" in os.environ:
-      os.environ["XLA_FLAGS"] = (
-          f"{os.environ['XLA_FLAGS']} {additional_xla_flags}"
-      )
-    else:
-      os.environ["XLA_FLAGS"] = additional_xla_flags
 
   if is_multiprocess():
     jt_multiprocess.main()

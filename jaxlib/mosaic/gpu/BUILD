@@ -289,7 +289,6 @@ cc_library(
         ":dump",
         ":library_paths",  # buildcleaner: keep
         ":mosaic_gpu_cc_proto",
-        ":nvshmem",
         ":passes",
         ":serde",
         ":target",
