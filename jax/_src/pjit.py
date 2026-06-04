@@ -18,12 +18,18 @@ from collections import defaultdict
 from collections.abc import Callable, Sequence, Iterable
 import contextlib
 from dataclasses import dataclass, replace
+import enum
 from functools import partial
 import inspect
 import itertools as it
 import weakref
 from typing import NamedTuple, Any, Union
 import warnings
+
+class Inline(enum.Enum):
+  FORCE = "force"
+  AVOID = "avoid"
+  AUTO = "auto"
 
 import numpy as np
 
@@ -115,7 +121,7 @@ class PjitInfo(NamedTuple):
   device: xc.Device | None
   backend: str | None
   keep_unused: bool
-  inline: bool
+  inline: bool | str | Inline
   use_resource_env: bool  # False for jit, True for pjit
   compiler_options_kvs: tuple[tuple[str, Any], ...]
 
@@ -337,7 +343,7 @@ def _parse_jit_arguments(fun: Callable, *, in_shardings: Any,
                          donate_argnums: int | Sequence[int] | None,
                          donate_argnames: str | Iterable[str] | None,
                          keep_unused: bool, device: xc.Device | None,
-                         backend: str | None, inline: bool,
+                         backend: str | None, inline: bool | str | Inline,
                          compiler_options: dict[str, Any] | None,
                          use_resource_env: bool) -> PjitInfo:
   """Parses the arguments to jit/pjit.
@@ -395,6 +401,12 @@ def _parse_jit_arguments(fun: Callable, *, in_shardings: Any,
 
   compiler_options_kvs = (() if compiler_options is None else
                           tuple(compiler_options.items()))
+
+  if isinstance(inline, bool):
+    inline = Inline.FORCE if inline else Inline.AUTO
+  elif isinstance(inline, str):
+    inline = Inline(inline)
+
   return PjitInfo(
         fun_sourceinfo=fun_sourceinfo,
         fun_signature=fun_signature,
@@ -425,7 +437,7 @@ def make_jit(fun: Callable,
              keep_unused: bool,
              device: xc.Device | None,
              backend: str | None,
-             inline: bool,
+             inline: bool | str | Inline,
              compiler_options: dict[str, Any] | None,
              use_resource_env: bool) -> Any:
   """jit() and pjit() are thin wrappers around this function."""
@@ -681,7 +693,7 @@ def pjit(
     keep_unused: bool = False,
     device: xc.Device | None = None,
     backend: str | None = None,
-    inline: bool = False,
+    inline: bool | str | Inline = Inline.AUTO,
     compiler_options: dict[str, Any] | None = None,
 ) -> JitWrapped:
   """`jax.experimental.pjit.pjit` has been deprecated. Please use `jax.jit`."""
@@ -1269,7 +1281,7 @@ def pjit_staging_rule(trace, source_info, *args, **params):
         f' {source_info_util.summarize(source_info)}')
   # If we're inlining, no need to compute forwarding information; the inlined
   # computation will in effect forward things.
-  if (params["inline"] and
+  if (params["inline"] == Inline.FORCE and
       all(isinstance(i, UnspecifiedValue) for i in params["in_shardings"]) and
       all(isinstance(o, UnspecifiedValue) for o in params["out_shardings"]) and
       all(i is None for i in params["in_layouts"]) and
@@ -1409,6 +1421,15 @@ def _pjit_lowering(ctx: mlir.LoweringRuleContext, *args, name: str,
       ctx.name_stack.extend(result.wrapped_name), ctx.traceback):
     call = func_dialect.CallOp(
         result.flat_output_types, result.symbol_ref, flat_args)
+    if inline == Inline.AVOID:
+      dict_attr = {"inlineable": ir.StringAttr.get("avoid")}
+      call.operation.attributes['mhlo.frontend_attributes'] = ir.DictAttr.get(dict_attr)  # type: ignore
+    elif inline == Inline.FORCE:
+      dict_attr = {"inlineable": ir.StringAttr.get("force")}
+      call.operation.attributes['mhlo.frontend_attributes'] = ir.DictAttr.get(dict_attr)  # type: ignore
+    elif inline == Inline.AUTO:
+      dict_attr = {"inlineable": ir.StringAttr.get("auto")}
+      call.operation.attributes['mhlo.frontend_attributes'] = ir.DictAttr.get(dict_attr)  # type: ignore
   mlir.wrap_compute_type_in_place(ctx, call.operation)
   out_nodes = result.output_treedef.unflatten(call.results)
   if effects:

@@ -4444,6 +4444,45 @@ class APITest(jtu.JaxTestCase):
     jaxpr = api.make_jaxpr(f)(3)
     self.assertNotIn('jit', str(jaxpr))
 
+  def test_jit_inline_tristate(self):
+    @api.jit(inline="auto")
+    def f(x):
+      return x * 2
+
+    jaxpr = api.make_jaxpr(f)(3)
+    self.assertIn('jit', str(jaxpr))
+
+    @api.jit(inline="avoid")
+    def f(x):
+      return x * 2
+
+    jaxpr = api.make_jaxpr(f)(3)
+    self.assertIn('jit', str(jaxpr))
+
+    @api.jit(inline="force")
+    def f(x):
+      return x * 2
+
+    jaxpr = api.make_jaxpr(f)(3)
+    self.assertNotIn('jit', str(jaxpr))
+
+  def test_inline_optimized_hlo(self):
+    def sub(x):
+      return x * 2
+
+    get_hlo = lambda inline_mode: api.jit(
+        lambda x: api.jit(sub, inline=inline_mode)(x) + 1.0
+    ).lower(1.0).compile().runtime_executable().hlo_modules()[0].to_string()
+
+    # For auto, we expect the single call to be inlined by XLA heuristics
+    self.assertNotIn("call(", get_hlo("auto"))
+
+    # For avoid, we expect XLA to preserve the call
+    self.assertIn("call(", get_hlo("avoid"))
+
+    # For force, we expect it to be inlined (by JAX frontend, so XLA never even sees the call)
+    self.assertNotIn("call(", get_hlo("force"))
+
   # Repro for https://github.com/jax-ml/jax/issues/7229.
   def test_compute_with_large_transfer(self):
     def f(x, delta):

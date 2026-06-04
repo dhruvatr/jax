@@ -56,6 +56,7 @@ from jax._src.dtypes import canonicalize_value
 from jax._src import sharding_impls
 from jax._src import source_info_util
 from jax._src import traceback_util
+from jax._src.pjit import Inline
 from jax._src import pjit
 from jax._src import xla_bridge as xb
 from jax._src.core import eval_jaxpr, shaped_abstractify, ShapedArray, typeof
@@ -170,7 +171,7 @@ def jit(
   keep_unused: bool = ...,
   device: xc.Device | None = ...,
   backend: str | None = ...,
-  inline: bool = ...,
+  inline: bool | str | Inline = ...,
   compiler_options: dict[str, Any] | None = ...,
 ) -> pjit.JitWrapped:
   ...
@@ -187,7 +188,7 @@ def jit(
   keep_unused: bool = ...,
   device: xc.Device | None = ...,
   backend: str | None = ...,
-  inline: bool = ...,
+  inline: bool | str | Inline = ...,
   compiler_options: dict[str, Any] | None = ...,
 ) -> Callable[[Callable], pjit.JitWrapped]:
   ...
@@ -203,7 +204,7 @@ def jit(
   keep_unused: bool = False,
   device: xc.Device | None = None,
   backend: str | None = None,
-  inline: bool = False,
+  inline: bool | str | Inline = Inline.AUTO,
   compiler_options: dict[str, Any] | None = None,
 ) -> pjit.JitWrapped | Callable[[Callable], pjit.JitWrapped]:
   """Sets up ``fun`` for just-in-time compilation with XLA.
