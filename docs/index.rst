@@ -138,11 +138,11 @@ maintains an up-to-date list.
 
    key-concepts
    advanced_guides
+   pallas/index
    jax
    contributor_guide
    extensions
    notes
-   pallas/index
    about
 
 
