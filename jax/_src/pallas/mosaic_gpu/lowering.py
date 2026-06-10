@@ -1643,6 +1643,8 @@ def _commute_transform(
       assert isinstance(aval, jax_core.ShapedArray)
       new_reshape, new_untile = t1.commute_reshape(aval, t2)
       return new_reshape, new_untile
+    case (gpu_core.UndoTMEMBatchDimensionTransform(), indexing.NDIndexer()):
+      return t1, t2
     case _:
       raise NotImplementedError(t1, t2)
 
@@ -1763,20 +1765,21 @@ def _bubble_up_transforms_for_lowering(
   remaining_transform_avals = []
 
   for t_aval, t in zip(transform_avals, transforms):
-    should_bubble_up = False
     match t:
-      case indexing.NDIndexer():
-        should_bubble_up = True
       case TransposeTransform():
         should_bubble_up = handle_transposes
       case ReshapeTransform():
         should_bubble_up = handle_reshapes
       case (
-          gpu_core.PeerMemRef()
+          indexing.NDIndexer()
+          | gpu_core.PeerMemRef()
           | gpu_core.MulticastRef()
           | gpu_core.ClusterRefTransform()
+          | gpu_core.UndoTMEMBatchDimensionTransform()
       ):
         should_bubble_up = True
+      case _:
+        should_bubble_up = False
 
     if should_bubble_up:
       (
@@ -1885,6 +1888,7 @@ def _handle_transforms(
   is_multicast = False
   cluster_dim = None
   cluster_idx = None
+  has_batch_dim = False
 
   for t_aval, t in zip(bubbled_up_transform_avals, bubbled_up_transforms):
     match t:
@@ -1893,6 +1897,16 @@ def _handle_transforms(
         if t_aval.int_indexer_shape:
           raise NotImplementedError("int_indexer_shape non-empty")
         indices = _ndindexer_indices(indexer)
+        if has_batch_dim:
+          assert len(indices) == 3
+          assert isinstance(indices[0], ir.Value)
+          n = ref_aval.shape[-1]
+          assert indices[2] == slice(0, n, 1)
+          ds = mgpu.DynamicSlice(
+              arith_dialect.muli(indices[0], mgpu.c(n, ir.IndexType.get())),
+              length=n,
+          )
+          indices = (indices[1], ds)
         if (
             isinstance(transformed_ref, tcgen05.TMEMRef)
             and ctx.module_ctx.lowering_semantics == mgpu.LoweringSemantics.Lane
@@ -1934,6 +1948,11 @@ def _handle_transforms(
           )
         cluster_dim = _resolve_cluster_axis(ctx.module_ctx.axis_names, dims[0])
         cluster_idx = _as_index(idxs[0])
+      case gpu_core.UndoTMEMBatchDimensionTransform():
+        assert isinstance(t_aval, gpu_core.UndoTMEMBatchDimensionTransform)
+        assert not has_batch_dim
+        ref_aval = t_aval.transform_type(ref_aval)
+        has_batch_dim = True
       case _:
         raise AssertionError(
             f"Transform {t} has no defined lowering rule."

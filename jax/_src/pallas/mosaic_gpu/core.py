@@ -177,6 +177,10 @@ class MemorySpace(enum.Enum):
         raise ValueError("transforms are not supported for TMEM")
       if collective is None:
         collective = False
+      if len(shape) > 3:
+        raise ValueError(f"Unsupported TMEM shape: {shape}")
+      if len(shape) == 3:
+        transforms = (TMEMBatchDimensionTransform(),)
       if layout is None:
         if packed is None:
           if dtypes.itemsize_bits(dtype) != 32:
@@ -185,8 +189,10 @@ class MemorySpace(enum.Enum):
                 " or an explicit TMEM layout"
             )
           packed = False
+        # Ignore batch dimension for layout inference.
+        shape_for_layout = shape if len(shape) == 2 else shape[1:]
         mgpu_layout = infer_tmem_layout(
-            shape, dtype, packed=packed, collective=collective
+            shape_for_layout, dtype, packed=packed, collective=collective
         )
       else:
         if packed is not None:
@@ -419,17 +425,18 @@ class GPUMemoryRef(pallas_core.MemoryRef):
     is_tmem = self.memory_space == MemorySpace.TMEM
     assert (self.layout is not None) == is_tmem
     assert (self.collective is not None) == is_tmem
-    assert not (self.transforms and is_tmem)
 
   def get_ref_aval(self) -> _Ref:
     aval: Any = jax_core.ShapedArray(self.shape, self.dtype)
+    physical_aval = state_types.transform_type(self.transforms, aval)
     if self.memory_space == MemorySpace.TMEM:
       aval = AbstractTMEMRef(
           aval, self.memory_space, self.layout, self.collective
       )
-      physical_ref_aval = aval
+      physical_ref_aval = AbstractTMEMRef(
+          physical_aval, self.memory_space, self.layout, self.collective
+      )
     else:
-      physical_aval = state_types.transform_type(self.transforms, aval)
       aval = state.AbstractRef(aval, memory_space=self.memory_space)
       physical_ref_aval = state.AbstractRef(physical_aval, memory_space=self.memory_space)
     transforms: list[state_types.Transform] = pallas_core.undo_transforms(
@@ -602,7 +609,6 @@ class AbstractRefUnion(state.AbstractRef):
     first_ref = ref_leaves[0]
     assert all(ref.collective == first_ref.collective for ref in ref_leaves)
     return first_ref.collective
-
 
 @dataclasses.dataclass(init=False, frozen=True)
 class RefUnion(GPUMemoryRef):
@@ -1233,6 +1239,67 @@ class UnswizzleRef(state_types.Transform):
 
   def pretty_print(self, context: jax_core.JaxprPpContext) -> pp.Doc:
     return pp.text(f"{{unswizzle({self.swizzle})}}")
+
+
+@tree_util.register_dataclass
+@dataclasses.dataclass(frozen=True)
+class TMEMBatchDimensionTransform(state_types.Transform):
+  """A transform that converts a 3D TMEM ref into a 2D TMEM ref."""
+
+  def transform_type(
+      self, x: jax_core.AbstractValue
+  ) -> state_types.AbstractRef:
+    match x:
+      case jax_core.ShapedArray():
+        if x.ndim != 3:
+          raise ValueError(f"Unsupported ndim: {x.ndim}")
+        # (b, m, n) -> (m, b * n)
+        transformed_shape = (x.shape[1], x.shape[0] * x.shape[2])
+        return x.update(shape=transformed_shape)
+      case state_types.AbstractRef():
+        if x.memory_space != MemorySpace.TMEM:
+          raise ValueError(f"Unsupported memory space: {x.memory_space}")
+        return x.update(inner_aval=self.transform_type(x.inner_aval))
+      case _:
+        raise TypeError(f"Unsupported type: {x}")
+
+  def undo(self, x: jax_core.AbstractValue) -> state_types.Transform:
+    assert hasattr(x, "shape")
+    return UndoTMEMBatchDimensionTransform(x.shape[0])
+
+
+@tree_util.register_dataclass
+@dataclasses.dataclass(frozen=True)
+class UndoTMEMBatchDimensionTransform(state_types.Transform):
+  """The inverse of TMEMBatchDimensionTransform."""
+
+  batch_dim: int = dataclasses.field(metadata=dict(static=True))
+
+  def transform_type(
+      self, x: jax_core.AbstractValue
+  ) -> state_types.AbstractRef:
+    match x:
+      case jax_core.ShapedArray():
+        if x.ndim != 2:
+          raise ValueError(f"Unsupported shape: {x.shape}")
+        if x.shape[1] % self.batch_dim != 0:
+          raise ValueError(
+              f"Second dimension {x.shape[1]} must be divisible by batch_dim"
+              f" {self.batch_dim}"
+          )
+        # (m, b * n) -> (b, m, n)
+        transformed_shape = (
+            self.batch_dim,
+            x.shape[0],
+            x.shape[1] // self.batch_dim,
+        )
+        return x.update(shape=transformed_shape)
+      case state_types.AbstractRef():
+        if x.memory_space != MemorySpace.TMEM:
+          raise ValueError(f"Unsupported memory space: {x.memory_space}")
+        return x.update(inner_aval=self.transform_type(x.inner_aval))
+      case _:
+        raise TypeError(f"Unsupported type: {x}")
 
 
 @dataclasses.dataclass
