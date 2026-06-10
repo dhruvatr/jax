@@ -1,4 +1,4 @@
-name: CI
+name: Pytest
 
 on:
   # Trigger the workflow on push or pull request,
@@ -78,7 +78,7 @@ jobs:
   build:
     # Don't execute in fork due to runner type
     if: github.repository == 'jax-ml/jax'
-    name: "build ${{ matrix.name-prefix }} (py ${{ matrix.python-version }} on ubuntu-22.04, x64=${{ matrix.enable-x64}})"
+    name: "py${{ matrix.python-version }}, x64=${{ matrix.enable-x64 }}, ubuntu-22.04"
     runs-on: linux-x86-n4-32
     container:
       image: index.docker.io/library/ubuntu@sha256:4e0171b9275e12d375863f2b3ae9ce00a4c53ddda176bd55868df97ac6f21a6e # ratchet:ubuntu:22.04

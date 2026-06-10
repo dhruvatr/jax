@@ -1,4 +1,4 @@
-name: CI - Bazel CPU tests
+name: Bazel CPU
 
 on:
   workflow_dispatch:
@@ -82,7 +82,7 @@ jobs:
             # TODO: Just test against Python 3.11 with Bzlmod to avoid adding too much CI load.
             - python: "3.14"
               enable-bzlmod: 1
-    name: "Bazel CPU ${{ (contains(matrix.runner, 'linux-x86') && 'tests' || 'build only') }}"
+    name: "${{ (contains(matrix.runner, 'linux-x86') && 'Tests' || 'Build') }}"
 # End Presubmit Naming Check github-cpu-presubmits
     with:
       runner: ${{ matrix.runner }}
