@@ -145,7 +145,11 @@ set +e
 # should match the VM's CPU core count (set in `--local_test_jobs`).
 TEST_ARTIFACTS_DIR="test-artifacts-single"
 mkdir -p "$TEST_ARTIFACTS_DIR"
+
+INVOCATION_ID_SINGLE=$(python3 ci/utilities/record_resultstore_link.py "CUDA single-accelerator tests")
+
 bazel "${single_accelerator_bazel_test_args[@]}" \
+  --invocation_id="$INVOCATION_ID_SINGLE" \
   --profile="$TEST_ARTIFACTS_DIR/bazel_profile.json.gz" \
   --run_under "$(pwd)/build/parallel_accelerator_execute.sh" \
   --test_output=errors \
@@ -163,7 +167,11 @@ ci/utilities/collect_bazel_test_xmls.sh "$TEST_ARTIFACTS_DIR"
 # Runs multiaccelerator tests with all GPUs directly on the VM without RBE...
 TEST_ARTIFACTS_DIR="test-artifacts-multi"
 mkdir -p "$TEST_ARTIFACTS_DIR"
+
+INVOCATION_ID_MULTI=$(python3 ci/utilities/record_resultstore_link.py "CUDA multi-accelerator tests")
+
 bazel "${common_bazel_test_args[@]}" \
+  --invocation_id="$INVOCATION_ID_MULTI" \
   --profile="$TEST_ARTIFACTS_DIR/bazel_profile.json.gz" \
   --test_output=errors \
   --local_test_jobs=8 \

@@ -57,7 +57,11 @@ fi
 
 TEST_ARTIFACTS_DIR="test-artifacts"
 mkdir -p "$TEST_ARTIFACTS_DIR"
-bazel test --config=rbe_linux_x86_64_cuda${JAXCI_CUDA_VERSION} \
+
+INVOCATION_ID=$(python3 ci/utilities/record_resultstore_link.py "CUDA RBE tests")
+
+bazel test --invocation_id="$INVOCATION_ID" \
+      --config=rbe_linux_x86_64_cuda${JAXCI_CUDA_VERSION} \
       --profile="$TEST_ARTIFACTS_DIR/bazel_profile.json.gz" \
       --repo_env=HERMETIC_PYTHON_VERSION="$JAXCI_HERMETIC_PYTHON_VERSION" \
       --@rules_python//python/config_settings:py_freethreaded="$FREETHREADED_FLAG_VALUE" \

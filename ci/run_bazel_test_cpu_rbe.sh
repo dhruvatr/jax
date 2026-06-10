@@ -94,7 +94,11 @@ fi
 
 TEST_ARTIFACTS_DIR="test-artifacts"
 mkdir -p "$TEST_ARTIFACTS_DIR"
+
+INVOCATION_ID=$(python3 ci/utilities/record_resultstore_link.py "CPU RBE tests")
+
 bazel $bazel_output_base $JAXCI_BAZEL_CPU_RBE_MODE \
+    --invocation_id="$INVOCATION_ID" \
     $BZLMOD_CONFIG \
     --profile="$TEST_ARTIFACTS_DIR/bazel_profile.json.gz" \
     --build_runfile_links=false \

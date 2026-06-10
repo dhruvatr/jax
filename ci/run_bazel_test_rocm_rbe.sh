@@ -108,7 +108,11 @@ done
 
 TEST_ARTIFACTS_DIR="test-artifacts"
 mkdir -p "$TEST_ARTIFACTS_DIR"
+
+INVOCATION_ID=$(python3 ci/utilities/record_resultstore_link.py "ROCm RBE tests")
+
 bazel --bazelrc=build/rocm/rocm.bazelrc test \
+    --invocation_id="$INVOCATION_ID" \
     --profile="$TEST_ARTIFACTS_DIR/bazel_profile.json.gz" \
     --config=rocm_clang_hermetic \
     --config=rocm_rbe_dynamic \

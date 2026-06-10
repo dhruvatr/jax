@@ -91,7 +91,11 @@ if [[ "$JAXCI_RUN_FULL_TPU_TEST_SUITE" == "1" ]]; then
   # Run single-accelerator tests in parallel
   TEST_ARTIFACTS_DIR="test-artifacts-single"
   mkdir -p "$TEST_ARTIFACTS_DIR"
+
+  INVOCATION_ID_SINGLE=$(python3 ci/utilities/record_resultstore_link.py "TPU single-accelerator tests (full)")
+
   bazel test \
+    --invocation_id="$INVOCATION_ID_SINGLE" \
     --profile="$TEST_ARTIFACTS_DIR/bazel_profile.json.gz" \
     --repo_env=HERMETIC_PYTHON_VERSION="$JAXCI_HERMETIC_PYTHON_VERSION" \
     $OVERRIDE_XLA_REPO \
@@ -127,7 +131,11 @@ if [[ "$JAXCI_RUN_FULL_TPU_TEST_SUITE" == "1" ]]; then
   # Run multi-accelerator across all chips
   TEST_ARTIFACTS_DIR="test-artifacts-multi"
   mkdir -p "$TEST_ARTIFACTS_DIR"
+
+  INVOCATION_ID_MULTI=$(python3 ci/utilities/record_resultstore_link.py "TPU multi-accelerator tests (full)")
+
   bazel test \
+    --invocation_id="$INVOCATION_ID_MULTI" \
     --profile="$TEST_ARTIFACTS_DIR/bazel_profile.json.gz" \
     --repo_env=HERMETIC_PYTHON_VERSION="$JAXCI_HERMETIC_PYTHON_VERSION" \
     $OVERRIDE_XLA_REPO \
@@ -160,7 +168,11 @@ else
   # Run single-accelerator tests in parallel
   TEST_ARTIFACTS_DIR="test-artifacts-single"
   mkdir -p "$TEST_ARTIFACTS_DIR"
+
+  INVOCATION_ID_SINGLE=$(python3 ci/utilities/record_resultstore_link.py "TPU single-accelerator tests")
+
   bazel test \
+    --invocation_id="$INVOCATION_ID_SINGLE" \
     --profile="$TEST_ARTIFACTS_DIR/bazel_profile.json.gz" \
     --repo_env=HERMETIC_PYTHON_VERSION="$JAXCI_HERMETIC_PYTHON_VERSION" \
     $OVERRIDE_XLA_REPO \
@@ -211,7 +223,11 @@ else
   # Run multi-accelerator across all chips
   TEST_ARTIFACTS_DIR="test-artifacts-multi"
   mkdir -p "$TEST_ARTIFACTS_DIR"
+
+  INVOCATION_ID_MULTI=$(python3 ci/utilities/record_resultstore_link.py "TPU multi-accelerator tests")
+
   bazel test \
+    --invocation_id="$INVOCATION_ID_MULTI" \
     --profile="$TEST_ARTIFACTS_DIR/bazel_profile.json.gz" \
     --repo_env=HERMETIC_PYTHON_VERSION="$JAXCI_HERMETIC_PYTHON_VERSION" \
     --@rules_python//python/config_settings:py_freethreaded="$FREETHREADED_FLAG_VALUE" \
